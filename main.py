@@ -11,14 +11,17 @@ from tqdm import tqdm
 
 from transformers import get_linear_schedule_with_warmup
 
-
-
 ARCHIVE_ROOT = "archive"
 MASK_ROOT = "masks"
 BATCH_SIZE = 8
 LR = 0.001
 EPOCHS = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+if DEVICE.type == "cuda":
+    print("We are using the GPU.")
+else:
+    print("We are using the CPU.")
 
 #mean, std = compute_mean_std(ARCHIVE_ROOT, split="train")
 #print(mean, std)
@@ -45,6 +48,7 @@ class_criterion = nn.CrossEntropyLoss()
 optimizer = optim.AdamW(model.parameters(), lr=LR)
 
 def train():
+    print('training baseline model')
     best_val_loss = float('inf') 
 
     model.train()
@@ -78,6 +82,7 @@ def train():
             print(f"Best model saved with validation loss: {best_val_loss:.4f}")
 
 def custom_train():
+    print('training custom model')
     model = CustomModel().to(DEVICE)
     best_val_loss = float('inf') 
     
@@ -170,5 +175,5 @@ def test():
             print(f"Image {i}: Predicted Letter - {predicted_letter}")
 
 if __name__ == "__main__":
-    train()
+    custom_train()
     test()
