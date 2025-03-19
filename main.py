@@ -43,13 +43,13 @@ train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-model = UNet().to(DEVICE)
 criterion = nn.BCEWithLogitsLoss()
 class_criterion = nn.CrossEntropyLoss()
-optimizer = optim.AdamW(model.parameters(), lr=LR)
 
 def train():
     print('training baseline model')
+    model = UNet().to(DEVICE)
+    optimizer = optim.AdamW(model.parameters(), lr=LR)
     best_val_loss = float('inf') 
 
     model.train()
@@ -81,6 +81,8 @@ def train():
 
             torch.save(model.state_dict(), 'best_model.pth')
             print(f"Best model saved with validation loss: {best_val_loss:.4f}")
+
+    return model
 
 def custom_train():
     print('training custom model')
@@ -138,6 +140,8 @@ def custom_train():
         
     torch.save(model.swa_model.state_dict(), 'swa_model.pth')
     print("SWA model saved.")
+
+    return model
     
 def validate(model):
     model.eval()
@@ -178,5 +182,5 @@ def test(model):
             print(f"Image {i}: Predicted Letter - {predicted_letter}")
 
 if __name__ == "__main__":
-    custom_train()
-    test()
+    model = custom_train()
+    test(model)
