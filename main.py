@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim import swa_utils
 from torch.utils.data import DataLoader
 from model import UNet, CustomModel
 from dataloader import SegmentationDataset
@@ -73,7 +74,7 @@ def train():
             total_loss += loss.item()
 
         print(f"Epoch [{epoch+1}/{EPOCHS}], Loss: {total_loss / len(train_loader):.4f}")
-        val_loss = validate()
+        val_loss = validate(model)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -84,6 +85,7 @@ def train():
 def custom_train():
     print('training custom model')
     model = CustomModel().to(DEVICE)
+    optimizer = optim.AdamW(model.parameters(), lr=LR)
     best_val_loss = float('inf') 
     
     num_training_steps = len(train_loader) * EPOCHS
@@ -99,7 +101,7 @@ def custom_train():
     model.train()
     for epoch in range(EPOCHS):
         total_loss = 0
-        loop = tqdm(train_loader, leave=True, desc=f"Epoch {epoch+1}/{EPOCHS}")
+        loop = tqdm(train_loader, leave = True, desc = f"Epoch {epoch+1}/{EPOCHS}")
 
         for images, masks, labels in loop:
             images, masks, labels = images.to(DEVICE), masks.to(DEVICE), labels.to(DEVICE)
@@ -125,18 +127,19 @@ def custom_train():
             scheduler.step()  
 
         print(f"Epoch [{epoch+1}/{EPOCHS}], Loss: {total_loss / len(train_loader):.4f}")
-        val_loss = validate()
+        val_loss = validate(model)  
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-
             torch.save(model.state_dict(), 'best_model.pth')
             print(f"Best model saved with validation loss: {best_val_loss:.4f}")
 
-    model.swap_swa_weights()
-    model.update_bn(train_loader, DEVICE)
-
-def validate():
+    swa_utils.update_bn(train_loader, model.swa_model, device = DEVICE)
+        
+    torch.save(model.swa_model.state_dict(), 'swa_model.pth')
+    print("SWA model saved.")
+    
+def validate(model):
     model.eval()
     total_loss = 0
     loop = tqdm(val_loader, leave=True, desc="Validating")
@@ -154,7 +157,7 @@ def validate():
     print(f"Validation Loss: {total_loss / len(val_loader):.4f}")
     return total_loss / len(val_loader)
 
-def test():
+def test(model):
     model.eval()
 
     model.load_state_dict(torch.load('best_model.pth'))

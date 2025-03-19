@@ -82,7 +82,7 @@ def crop_tensor(target, reference):
     return target
 
 class CustomModel(UNet):
-    def __init__(self, in_channels=3, out_channels=1, num_classes=27):
+    def __init__(self, in_channels = 3, out_channels = 1, num_classes = 27):
         super().__init__(in_channels, out_channels, num_classes)
 
         self.swa_model = swa_utils.AveragedModel(self).to(device)
@@ -102,4 +102,3 @@ class CustomModel(UNet):
 
     def update_bn(self, train_loader, device):
         swa_utils.update_bn(train_loader, self.swa_model, device = device)
-    
