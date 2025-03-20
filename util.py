@@ -2,6 +2,7 @@ from torchvision import transforms
 import glob
 import numpy as np
 import os
+import torch
 from PIL import Image
 def compute_mean_std(dataset_path, split="train"):
     mean = np.zeros(3)
@@ -24,3 +25,10 @@ def compute_mean_std(dataset_path, split="train"):
     mean /= num_pixels
     std /= num_pixels
     return mean, std
+
+def class_accuracy(outputs, targets):
+    arr = torch.argmax(outputs, dim=1)
+
+    toret = arr == targets
+    # print(arr, targets)
+    return torch.sum(toret).item() / toret.nelement()

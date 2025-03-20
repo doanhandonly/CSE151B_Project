@@ -1,21 +1,34 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim import swa_utils
 from torch.utils.data import DataLoader
-from model import UNet
+from model import UNet, CustomModel
 from dataloader import SegmentationDataset
 from util import compute_mean_std
 import torchvision.transforms as transforms
 import torchvision
 from tqdm import tqdm
 
+from transformers import get_linear_schedule_with_warmup
+
+from util import class_accuracy
+
+import numpy as np
+
+import matplotlib.pyplot as plt
 
 ARCHIVE_ROOT = "archive"
 MASK_ROOT = "masks"
 BATCH_SIZE = 8
 LR = 0.001
-EPOCHS = 25
+EPOCHS = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+if DEVICE.type == "cuda":
+    print("We are using the GPU.")
+else:
+    print("We are using the CPU.")
 
 #mean, std = compute_mean_std(ARCHIVE_ROOT, split="train")
 #print(mean, std)
@@ -29,67 +42,216 @@ mask_transform = transforms.Compose([
 ])
 
 train_dataset = SegmentationDataset("train", transform=image_transform, target_transform=mask_transform, augment=True)
-val_dataset = SegmentationDataset("val", transform=image_transform, target_transform=mask_transform, augment=False)
-test_dataset = SegmentationDataset("test", transform=image_transform, target_transform=mask_transform, augment=False)
+val_dataset = SegmentationDataset("val", transform=image_transform, target_transform=mask_transform, augment=True)
+test_dataset = SegmentationDataset("test", transform=image_transform, target_transform=mask_transform, augment=True)
 
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=1, shuffle=True)
 
-model = UNet().to(DEVICE)
-criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.Adam(model.parameters(), lr=LR)
+# criterion = nn.CrossEntropyLoss() 
+class_criterion = nn.CrossEntropyLoss()
 
 def train():
-    model.train()
+    print('training baseline model')
+    model = UNet().to(DEVICE)
+    optimizer = optim.AdamW(model.parameters(), lr=LR)
+    best_val_loss = float('inf') 
 
+    model.train()
     for epoch in range(EPOCHS):
         total_loss = 0
+        epoch_class_accs = []
         loop = tqdm(train_loader, leave=True, desc=f"Epoch {epoch+1}/{EPOCHS}")
 
-        for images, masks in loop:
-            images, masks = images.to(DEVICE), masks.to(DEVICE)
+        for images, labels in loop:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
 
-            outputs = model(images)
-            loss = criterion(outputs, masks)
+            seg_output, class_output = model(images)  
+
+            # loss_seg = class_criterion(seg_output, masks)  
+            loss_class = class_criterion(class_output, labels)  
+
+            loss = loss_class  
+
+            class_acc = class_accuracy(class_output.detach(), labels)
+            epoch_class_accs.append(class_acc)
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
+        
+        avg_train_acc = np.mean(epoch_class_accs)
 
-        print(f"Epoch [{epoch+1}/{EPOCHS}], Loss: {total_loss / len(train_loader):.4f}")
-        validate()
+        print(f"Epoch [{epoch+1}/{EPOCHS}], Loss: {total_loss / len(train_loader):.4f}, Accuracy: {avg_train_acc:.4f}")
+        val_loss = validate(model)
 
-def validate():
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+
+            torch.save(model.state_dict(), 'best_model.pth')
+            print(f"Best model saved with validation loss: {best_val_loss:.4f}")
+
+    return model
+
+def custom_train():
+    print('training custom model')
+    model = UNet().to(DEVICE)
+    optimizer = optim.AdamW(model.parameters(), lr=LR)
+    print(model.parameters())
+    best_val_loss = float('inf') 
+    
+    # num_training_steps = len(train_loader) * EPOCHS
+    # num_warmup_steps = int(0.1 * num_training_steps)
+    # scheduler = get_linear_schedule_with_warmup(
+    #     optimizer,
+    #     num_warmup_steps = num_warmup_steps,
+    #     num_training_steps = num_training_steps
+    # )
+
+    # swa_scheduler = model.get_swa_scheduler(optimizer)
+    # validate(model) 
+
+    model.train()
+    for epoch in range(EPOCHS):
+        epoch_class_accs = []
+        total_loss = 0
+        loop = tqdm(train_loader, leave = True, desc = f"Epoch {epoch+1}/{EPOCHS}")
+
+        for images, labels in loop:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+
+            class_output = model(images)  
+
+            # loss_seg = criterion(seg_output, masks)  
+            loss_class = class_criterion(class_output, labels)  
+
+            # print(f"SegLoss: {loss_seg:.4f}, ClassLoss: {loss_class:.4f}")
+
+            # loss = loss_seg + loss_class  
+
+            loss = loss_class
+
+            class_acc = class_accuracy(class_output.detach(), labels)
+            epoch_class_accs.append(class_acc)
+
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # print(model.encoder1.weight.sum(), model.encoder1.weight.grad.sum())
+            optimizer.step()
+            # print(model.encoder1.weight.sum(), model.encoder1.weight.grad.sum())
+            optimizer.zero_grad()
+            
+            
+            total_loss += loss.item()
+
+        # if epoch >= model.swa_start:
+        #     if not model.swa_active:
+        #         model.swa_active = True  
+        #     model.update_swa()  
+        #     swa_scheduler.step() 
+        # else:
+        #     scheduler.step()  
+        # scheduler.step()
+        avg_train_acc = np.mean(epoch_class_accs)
+
+        print(f"Epoch [{epoch+1}/{EPOCHS}], Loss: {total_loss / len(train_loader):.4f}, Accuracy: {avg_train_acc:.4f}")
+        val_loss = validate(model)  
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), 'best_model.pth')
+            print(f"Best model saved with validation loss: {best_val_loss:.4f}")
+
+    # swa_utils.update_bn(train_loader, model.swa_model, device = DEVICE)
+        
+    # torch.save(model.swa_model.state_dict(), 'swa_model.pth')
+    # print("SWA model saved.")
+
+    return model
+
+# def yolo():
+#     import matplotlib.pyplot as plt
+
+#     model_path = "best.pt"
+#     model = YOLO(model_path)
+#     results = model.predict(img_path, conf=0.2)
+
+#     # Load image with OpenCV
+#     img = cv2.imread(img_path)
+#     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB for matplotlib
+
+#     # Draw bounding boxes
+#     for r in results:
+#         for box in r.boxes:
+#             x1, y1, x2, y2 = map(int, box.xyxy[0])  # Get bounding box coordinates
+#             conf = box.conf[0].item()  # Confidence score
+
+#             # Draw rectangle & label
+#             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green box
+#             cv2.putText(img, f"{conf:.2f}", (x1, y1 - 10),
+#                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+#     # Display image
+#     plt.figure(figsize=(6,6))
+#     plt.imshow(img)
+#     plt.axis("off")
+#     plt.show()
+    
+def validate(model):
     model.eval()
     total_loss = 0
+    total_accs = []
     loop = tqdm(val_loader, leave=True, desc="Validating")
 
     with torch.no_grad():
-        for images, masks in loop:
-            images, masks = images.to(DEVICE), masks.to(DEVICE)
+        for images, labels in loop:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
 
-            outputs = model(images)
-            loss = criterion(outputs, masks)
-
+            class_output = model(images)
+            # loss_seg = criterion(seg_output, masks)
+            loss_class = class_criterion(class_output, labels)
+            # loss = loss_class + loss_seg
+            loss = loss_class
             total_loss += loss.item()
 
-    print(f"Validation Loss: {total_loss / len(val_loader):.4f}")
-
-def test():
-    model.eval()
+            class_acc = class_accuracy(class_output.detach(), labels)
+            total_accs.append(class_acc)
     
+    avg_acc = np.mean(total_accs)
+
+    print(f"Validation Loss: {total_loss / len(val_loader):.4f}, Accuracy: {avg_acc:.4f}")
+    return total_loss / len(val_loader)
+
+def test(model):
+    model.eval()
+
+    model.load_state_dict(torch.load('best_model.pth'))
+    print("Best model loaded for testing.")
     with torch.no_grad():
-        for i, (image, mask) in enumerate(test_loader):
-            image, mask = image.to(DEVICE), mask.to(DEVICE)
-            output = torch.sigmoid(model(image))  
-            
-            torchvision.utils.save_image(image, f"results/input_{i}.png")
-            torchvision.utils.save_image(mask, f"results/mask_{i}.png")
-            torchvision.utils.save_image(output, f"results/output_{i}.png")
+        counter = 0
+        for i, (image, label) in enumerate(test_loader):
+            # print(i)
+            image, label = image.to(DEVICE),  label.to(DEVICE)
+            class_output = model(image)  
+
+            predicted_class = torch.argmax(class_output, dim=1).item()
+            predicted_letter = "Blank" if predicted_class == 26 else chr(predicted_class + ord('A'))
+
+            if label == predicted_class:
+                counter += 1
+
+            # torchvision.utils.save_image(image, f"results/input_{i}.png")
+            # torchvision.utils.save_image(mask, f"results/mask_{i}.png")
+            # torchvision.utils.save_image(output, f"results/output_{i}.png")
+
+            # print(f"Image {i}: Predicted Letter - {predicted_letter}")
+        print(f"Test Accuracy = {counter / len(test_loader):.4f}")
 
 if __name__ == "__main__":
-    train()
-    test()
+    # model = custom_train()
+    # model = train()
+    model = UNet().to(DEVICE)
+    test(model)
